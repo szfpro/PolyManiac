@@ -69,6 +69,14 @@ export const GlobalStyles = createGlobalStyle`
         user-select: none;
     }
 
+    html,
+    body,
+    #root {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+    }
+
     body {
         background-color: ${({ theme }) => theme.background};
         color: ${({ theme }) => theme.strong};

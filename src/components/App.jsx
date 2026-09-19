@@ -3,11 +3,12 @@ import { ThemeProvider } from 'styled-components';
 import PolySynth from 'src/components/PolySynth';
 import { GlobalStyles } from 'src/styles/globalStyles';
 import { THEMES } from 'src/styles/themes';
+import { storageGet, storageRemove } from 'src/util/safeStorage';
 
 const getTheme = () => {
-    const storedTheme = localStorage.getItem('PolySynth-Theme');
+    const storedTheme = storageGet('PolySynth-Theme');
     if (!THEMES[storedTheme]) {
-        localStorage.removeItem('PolySynth-Theme');
+        storageRemove('PolySynth-Theme');
         return 'Dark';
     }
     return storedTheme;

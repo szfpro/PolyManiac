@@ -1,14 +1,35 @@
-import React, { useLayoutEffect, useEffect, useState } from 'react';
+import React, { useLayoutEffect, useEffect, useState, useRef } from 'react';
 import PropTypes from 'prop-types';
 import * as Nodes from 'src/nodes';
 import MonoSynth from 'src/components/MonoSynth';
 import Knob from 'src/components/Knob';
 import KnobGrid from 'src/components/KnobGrid';
 import Module from 'src/components/Module';
+import ViewportFit from 'src/components/ViewportFit';
 import PeakMeter from 'src/components/PeakMeter';
 import Select from 'src/components/Select';
 import presetData from 'src/util/presetData';
-import { getNoteInfo, WAVEFORM, FILTER, REVERB } from 'src/util/util';
+import { getNoteInfo, getNoteInfoFromMidi, WAVEFORM, FILTER, REVERB } from 'src/util/util';
+import {
+    getWax,
+    getAudioContext,
+    connectMasterOutput,
+    initWaxMidi,
+    initWaxTransport,
+    isRunningInWax,
+} from 'src/wax/bridge';
+import {
+    CC_PARAM_SPECS,
+    CC_NUMBER_TO_PARAM,
+    CC_SUSTAIN_PEDAL,
+    ccToValue,
+} from 'src/wax/ccMap';
+import { sendParamCc } from 'src/wax/midiCc';
+import { createDataTreeBridge, unwrapDataTreeParams } from 'src/wax/dataTree';
+import {
+    pickSynthSnapshot,
+    applySynthSnapshot,
+} from 'src/util/synthSnapshot';
 import { THEMES } from 'src/styles/themes';
 
 import {
@@ -24,7 +45,7 @@ import {
 
 const BASE_CLASS_NAME = 'PolySynth';
 
-const AC = new AudioContext();
+const AC = getAudioContext();
 const polyphony = 8;
 const synthArr = Array(polyphony).fill(0).map(_ => new MonoSynth(AC));
 let synthPos = 0;
@@ -97,6 +118,117 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
     const [eqLowFreq, setEqLowFreq] = useState(320);
     const [eqHighFreq, setEqHighFreq] = useState(3200);
 
+    const skipPresetLoadRef = useRef(false);
+    const fromMidiRef = useRef(false);
+    const sustainPedalRef = useRef(false);
+    const sustainedNotesRef = useRef(new Set());
+    const waxMidiRef = useRef(null);
+    const keyboardInputRef = useRef(null);
+    const dataTreeRef = useRef(null);
+    const inWax = isRunningInWax();
+    const snapshotStateRef = useRef({});
+    const snapshotSettersRef = useRef({
+        currentPreset: setCurrentPreset,
+        octaveMod: setOctaveMod,
+        theme: setTheme,
+        polyphony: setPolyphony,
+        portamentoSpeed: setPortamentoSpeed,
+        masterVolume: setMasterVolume,
+        masterFilterType: setMasterFilterType,
+        masterFilterFreq: setMasterFilterFreq,
+        masterFilterQ: setMasterFilterQ,
+        masterFilterGain: setMasterFilterGain,
+        vcoType: setVcoType,
+        gainAttack: setGainAttack,
+        gainDecay: setGainDecay,
+        gainSustain: setGainSustain,
+        gainRelease: setGainRelease,
+        filterType: setFilterType,
+        filterFreq: setFilterFreq,
+        filterQ: setFilterQ,
+        filterGain: setFilterGain,
+        filterAttack: setFilterAttack,
+        filterDecay: setFilterDecay,
+        filterRelease: setFilterRelease,
+        filterEnvAmount: setFilterEnvAmount,
+        distortionAmount: setDistortionAmount,
+        distortionDist: setDistortionDist,
+        reverbType: setReverbType,
+        reverbAmount: setReverbAmount,
+        flangerAmount: setFlangerAmount,
+        flangerDepth: setFlangerDepth,
+        flangerRate: setFlangerRate,
+        flangerFeedback: setFlangerFeedback,
+        flangerDelay: setFlangerDelay,
+        delayTime: setDelayTime,
+        delayFeedback: setDelayFeedback,
+        delayTone: setDelayTone,
+        delayAmount: setDelayAmount,
+        pingPongDelayTime: setPingPongDelayTime,
+        pingPongFeedback: setPingPongFeedback,
+        pingPongTone: setPingPongTone,
+        pingPongAmount: setPingPongAmount,
+        vibratoDepth: setVibratoDepth,
+        vibratoRate: setVibratoRate,
+        bitCrushDepth: setBitCrushDepth,
+        bitCrushAmount: setBitCrushAmount,
+        eqLowGain: setEqLowGain,
+        eqHighGain: setEqHighGain,
+        eqLowFreq: setEqLowFreq,
+        eqHighFreq: setEqHighFreq,
+    });
+
+    snapshotStateRef.current = {
+        currentPreset,
+        octaveMod,
+        theme: currentTheme,
+        polyphony,
+        portamentoSpeed,
+        masterVolume,
+        masterFilterType,
+        masterFilterFreq,
+        masterFilterQ,
+        masterFilterGain,
+        vcoType,
+        gainAttack,
+        gainDecay,
+        gainSustain,
+        gainRelease,
+        filterType,
+        filterFreq,
+        filterQ,
+        filterGain,
+        filterAttack,
+        filterDecay,
+        filterRelease,
+        filterEnvAmount,
+        distortionAmount,
+        distortionDist,
+        reverbType,
+        reverbAmount,
+        flangerAmount,
+        flangerDepth,
+        flangerRate,
+        flangerFeedback,
+        flangerDelay,
+        delayTime,
+        delayFeedback,
+        delayTone,
+        delayAmount,
+        pingPongDelayTime,
+        pingPongFeedback,
+        pingPongTone,
+        pingPongAmount,
+        vibratoDepth,
+        vibratoRate,
+        bitCrushDepth,
+        bitCrushAmount,
+        eqLowGain,
+        eqHighGain,
+        eqLowFreq,
+        eqHighFreq,
+    };
+
     const octaveUp = () => {
         if (octaveMod < 7) {
             setOctaveMod(octaveMod + 1);
@@ -148,7 +280,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
         masterLimiter.setKnee(0);
         masterLimiter.setRatio(20);
 
-        masterGain.connect(AC.destination);
+        connectMasterOutput(masterGain.getNode(), AC);
     };
 
     const getGainEnv = () => ({
@@ -200,9 +332,36 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
 
         incrementSynthPos();
     };
+    const releaseNoteVoices = (note) => {
+        const targetSynths = synthArr.filter((synth) => synth.currentNote === note.note);
+        targetSynths.forEach((synth) => synthNoteOff(synth));
+    };
+
+    const releaseSustainedNotes = () => {
+        sustainedNotesRef.current.forEach((noteName) => {
+            releaseNoteVoices({ note: noteName });
+        });
+        sustainedNotesRef.current.clear();
+    };
+
     const noteOff = (note) => {
-        const targetSynths = synthArr.filter(synth => synth.currentNote === note.note);
-        targetSynths.forEach(synth => synthNoteOff(synth));
+        if (sustainPedalRef.current) {
+            sustainedNotesRef.current.add(note.note);
+            return;
+        }
+        releaseNoteVoices(note);
+    };
+
+    const setParam = (key, val) => {
+        if (key === 'polyphony') {
+            setPolyphony(val);
+            resetSynthPos();
+        } else {
+            snapshotSettersRef.current[key]?.(val);
+        }
+        if (!fromMidiRef.current) {
+            sendParamCc(key, val);
+        }
     };
 
     // Keyboard listeners
@@ -224,20 +383,80 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
         const note = getNoteInfo(e.key, octaveMod);
         if (note) noteOff(note);
     }
-    const engageKeyboard = () => {
-        window.addEventListener('keydown', keydownFunction);
-        window.addEventListener('keyup', keyupFunction);
-    }
-    const disengageKeyboard = () => {
-        window.removeEventListener('keydown', keydownFunction);
-        window.removeEventListener('keyup', keyupFunction);
-    }
+    const handleWaxMidi = (msg) => {
+        if (!synthActive) activateSynth();
+
+        if (msg.type === 'cc') {
+            if (msg.controller === CC_SUSTAIN_PEDAL) {
+                const wasOn = sustainPedalRef.current;
+                sustainPedalRef.current = msg.value >= 64;
+                if (wasOn && !sustainPedalRef.current) {
+                    releaseSustainedNotes();
+                }
+                return;
+            }
+
+            const paramKey = CC_NUMBER_TO_PARAM[msg.controller];
+            if (!paramKey) return;
+            const spec = CC_PARAM_SPECS[paramKey];
+            const value = ccToValue(msg.value, spec);
+            fromMidiRef.current = true;
+            setParam(paramKey, value);
+            fromMidiRef.current = false;
+            return;
+        }
+
+        if (msg.type === 'noteon' && msg.velocity > 0) {
+            const note = getNoteInfoFromMidi(msg.note);
+            if (note) noteOn(note);
+            return;
+        }
+
+        if (msg.type === 'noteoff' || (msg.type === 'noteon' && msg.velocity === 0)) {
+            const note = getNoteInfoFromMidi(msg.note);
+            if (note) noteOff(note);
+        }
+    };
+
+    waxMidiRef.current = { handleWaxMidi };
+    keyboardInputRef.current = { keydownFunction, keyupFunction };
 
     // Init
     useLayoutEffect(initSynth, []);
 
+    useEffect(() => {
+        const wax = getWax();
+        if (!wax?.data) return undefined;
+
+        const bridge = createDataTreeBridge(wax, {
+            collect: () => pickSynthSnapshot(snapshotStateRef.current),
+            apply: (raw) => {
+                const params = unwrapDataTreeParams(raw);
+                if (params) {
+                    applySynthSnapshot(
+                        params,
+                        snapshotSettersRef.current,
+                        skipPresetLoadRef,
+                    );
+                }
+            },
+        });
+
+        dataTreeRef.current = bridge;
+        bridge.init();
+
+        return () => {
+            dataTreeRef.current = null;
+        };
+    }, []);
+
     // Load Preset
     useLayoutEffect(() => {
+        if (skipPresetLoadRef.current) {
+            skipPresetLoadRef.current = false;
+            return;
+        }
+
         const preset = presetData[currentPreset];
         synthArr.forEach(synth => synth.noteStop());
 
@@ -347,14 +566,103 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
         flangerAmount, flangerDelay, flangerDepth, flangerFeedback, flangerRate,
     ]);
 
-    // Needed to avoid stale hook state
     useEffect(() => {
-        engageKeyboard();
-        return disengageKeyboard;
-    });
+        dataTreeRef.current?.pushSoon();
+    }, [
+        currentPreset,
+        octaveMod,
+        currentTheme,
+        polyphony,
+        portamentoSpeed,
+        masterVolume,
+        masterFilterType,
+        masterFilterFreq,
+        masterFilterQ,
+        masterFilterGain,
+        vcoType,
+        gainAttack,
+        gainDecay,
+        gainSustain,
+        gainRelease,
+        filterType,
+        filterFreq,
+        filterQ,
+        filterGain,
+        filterAttack,
+        filterDecay,
+        filterRelease,
+        filterEnvAmount,
+        distortionAmount,
+        distortionDist,
+        reverbType,
+        reverbAmount,
+        flangerAmount,
+        flangerDepth,
+        flangerRate,
+        flangerFeedback,
+        flangerDelay,
+        delayTime,
+        delayFeedback,
+        delayTone,
+        delayAmount,
+        pingPongDelayTime,
+        pingPongFeedback,
+        pingPongTone,
+        pingPongAmount,
+        vibratoDepth,
+        vibratoRate,
+        bitCrushDepth,
+        bitCrushAmount,
+        eqLowGain,
+        eqHighGain,
+        eqLowFreq,
+        eqHighFreq,
+    ]);
+
+    useEffect(() => {
+        if (inWax) return undefined;
+
+        const onKeyDown = (e) => keyboardInputRef.current?.keydownFunction(e);
+        const onKeyUp = (e) => keyboardInputRef.current?.keyupFunction(e);
+        window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('keyup', onKeyUp);
+        return () => {
+            window.removeEventListener('keydown', onKeyDown);
+            window.removeEventListener('keyup', onKeyUp);
+        };
+    }, [inWax]);
+
+    useEffect(() => {
+        if (!inWax) return undefined;
+
+        let unsubMidi = null;
+        let cancelled = false;
+
+        initWaxMidi((msg) => {
+            if (!cancelled) waxMidiRef.current?.handleWaxMidi(msg);
+        })
+            .then((unsub) => {
+                if (!cancelled) unsubMidi = unsub;
+            })
+            .catch(() => {});
+
+        const unsubTransport = initWaxTransport({
+            onStop: () => {
+                synthArr.forEach((synth) => synth.noteStop());
+                sustainedNotesRef.current.clear();
+                sustainPedalRef.current = false;
+            },
+        });
+
+        return () => {
+            cancelled = true;
+            if (typeof unsubMidi === 'function') unsubMidi();
+            unsubTransport();
+        };
+    }, [inWax]);
 
     return (
-        <div className={`${BASE_CLASS_NAME} ${className}`.trim()}>
+        <ViewportFit className={`${BASE_CLASS_NAME} ${className}`.trim()}>
             <ModuleGridContainer>
 
                 <Module label="VCO">
@@ -374,25 +682,25 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             label="Attack"
                             value={gainAttack}
                             modifier={3}
-                            onUpdate={(val) => setGainAttack(val)}
+                            onUpdate={(val) => setParam('gainAttack', val)}
                         />
                         <Knob
                             label="Decay"
                             value={gainDecay}
                             modifier={3}
-                            onUpdate={(val) => setGainDecay(val)}
+                            onUpdate={(val) => setParam('gainDecay', val)}
                         />
                         <Knob
                             label="Sustain"
                             modifier={0.7}
                             value={gainSustain}
-                            onUpdate={(val) => setGainSustain(val)}
+                            onUpdate={(val) => setParam('gainSustain', val)}
                         />
                         <Knob
                             label="Release"
                             value={gainRelease}
                             modifier={3}
-                            onUpdate={(val) => setGainRelease(val)}
+                            onUpdate={(val) => setParam('gainRelease', val)}
                         />
                     </KnobGrid>
                 </Module>
@@ -408,7 +716,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                         <Knob
                             label="Dry/Wet"
                             value={reverbAmount}
-                            onUpdate={(val) => setReverbAmount(val)}
+                            onUpdate={(val) => setParam('reverbAmount', val)}
                         />
                     </KnobGrid>
                 </Module>
@@ -419,13 +727,13 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             label="Depth"
                             value={vibratoDepth}
                             modifier={200}
-                            onUpdate={(val) => setVibratoDepth(val)}
+                            onUpdate={(val) => setParam('vibratoDepth', val)}
                         />
                         <Knob
                             label="Rate"
                             value={vibratoRate}
                             modifier={50}
-                            onUpdate={(val) => setVibratoRate(val)}
+                            onUpdate={(val) => setParam('vibratoRate', val)}
                         />
                     </KnobGrid>
                 </Module>
@@ -435,7 +743,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                         <Knob
                             label="Volume"
                             value={masterVolume}
-                            onUpdate={(val) => setMasterVolume(val)}
+                            onUpdate={(val) => setParam('masterVolume', val)}
                         />
                     </KnobGrid>
                 </Module>
@@ -446,12 +754,12 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             label="Distortion"
                             value={distortionDist}
                             modifier={30}
-                            onUpdate={(val) => setDistortionDist(val)}
+                            onUpdate={(val) => setParam('distortionDist', val)}
                         />
                         <Knob
                             label="Dry/Wet"
                             value={distortionAmount}
-                            onUpdate={(val) => setDistortionAmount(val)}
+                            onUpdate={(val) => setParam('distortionAmount', val)}
                         />
                     </KnobGrid>
                 </Module>
@@ -470,13 +778,13 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             modifier={11000}
                             resetValue={11000}
                             isRounded
-                            onUpdate={(val) => setFilterFreq(val)}
+                            onUpdate={(val) => setParam('filterFreq', val)}
                         />
                         <Knob
                             label="Q"
                             value={filterQ}
                             modifier={20}
-                            onUpdate={(val) => setFilterQ(val)}
+                            onUpdate={(val) => setParam('filterQ', val)}
                         />
                         <Knob
                             label="Gain"
@@ -509,7 +817,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             modifier={11000}
                             isRounded
                             value={filterEnvAmount}
-                            onUpdate={(val) => setFilterEnvAmount(val)}
+                            onUpdate={(val) => setParam('filterEnvAmount', val)}
                         />
                     </KnobGrid>
                 </Module>
@@ -519,12 +827,12 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                         <Knob
                             label="Time"
                             value={delayTime}
-                            onUpdate={(val) => setDelayTime(val)}
+                            onUpdate={(val) => setParam('delayTime', val)}
                         />
                         <Knob
                             label="Feedback"
                             value={delayFeedback}
-                            onUpdate={(val) => setDelayFeedback(val)}
+                            onUpdate={(val) => setParam('delayFeedback', val)}
                         />
                         <Knob
                             label="Tone"
@@ -537,7 +845,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                         <Knob
                             label="Dry/Wet"
                             value={delayAmount}
-                            onUpdate={(val) => setDelayAmount(val)}
+                            onUpdate={(val) => setParam('delayAmount', val)}
                         />
                     </KnobGrid>
                 </Module>
@@ -556,13 +864,13 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             modifier={11000}
                             resetValue={11000}
                             isRounded
-                            onUpdate={(val) => setMasterFilterFreq(val)}
+                            onUpdate={(val) => setParam('masterFilterFreq', val)}
                         />
                         <Knob
                             label="Q"
                             value={masterFilterQ}
                             modifier={20}
-                            onUpdate={(val) => setMasterFilterQ(val)}
+                            onUpdate={(val) => setParam('masterFilterQ', val)}
                         />
                         <Knob
                             label="Gain"
@@ -592,7 +900,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             label="Portamento"
                             value={portamentoSpeed}
                             modifier={0.5}
-                            onUpdate={(val) => setPortamentoSpeed(val)}
+                            onUpdate={(val) => setParam('portamentoSpeed', val)}
                             disabled={polyphony !== 1}
                         />
                     </KnobGrid>
@@ -612,7 +920,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                         <Knob
                             label="Dry/Wet"
                             value={bitCrushAmount}
-                            onUpdate={(val) => setBitCrushAmount(val)}
+                            onUpdate={(val) => setParam('bitCrushAmount', val)}
                         />
                     </KnobGrid>
                 </Module>
@@ -649,7 +957,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                         <Knob
                             label="Dry/Wet"
                             value={flangerAmount}
-                            onUpdate={(val) => setFlangerAmount(val)}
+                            onUpdate={(val) => setParam('flangerAmount', val)}
                         />
                     </KnobGrid>
                 </Module>
@@ -689,14 +997,14 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             type="B"
                             modifier={24}
                             value={eqLowGain}
-                            onUpdate={(val) => setEqLowGain(val)}
+                            onUpdate={(val) => setParam('eqLowGain', val)}
                         />
                         <Knob
                             label="High Gain"
                             type="B"
                             modifier={24}
                             value={eqHighGain}
-                            onUpdate={(val) => setEqHighGain(val)}
+                            onUpdate={(val) => setParam('eqHighGain', val)}
                         />
                         <Knob
                             label="Low Freq"
@@ -704,7 +1012,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             resetValue={320}
                             isRounded
                             value={eqLowFreq}
-                            onUpdate={(val) => setEqLowFreq(val)}
+                            onUpdate={(val) => setParam('eqLowFreq', val)}
                         />
                         <Knob
                             label="High Freq"
@@ -713,7 +1021,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             offset={2400}
                             isRounded
                             value={eqHighFreq}
-                            onUpdate={(val) => setEqHighFreq(val)}
+                            onUpdate={(val) => setParam('eqHighFreq', val)}
                         />
                     </KnobGrid>
                 </Module>
@@ -748,9 +1056,11 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                             ))}
                         </InfoSelect>
                     </InfoContainer>
-                    <InfoContainer>
-                        <PrimaryText>Octave: {octaveMod}<br/>(z,x)</PrimaryText>
-                    </InfoContainer>
+                    {!inWax && (
+                        <InfoContainer>
+                            <PrimaryText>Octave: {octaveMod}<br/>(z,x)</PrimaryText>
+                        </InfoContainer>
+                    )}
                     <PeakMeter audioCtx={AC} sourceNode={masterGain} />
                     <Tag href="https://github.com/Kyle-Shanks">- KJ</Tag>
                 </InfoModule>
@@ -758,7 +1068,7 @@ const PolySynth = ({ className, setTheme, currentTheme }) => {
                 <Lines />
 
             </ModuleGridContainer>
-        </div>
+        </ViewportFit>
     );
 };
 

@@ -51,6 +51,19 @@ export const getNoteInfo = (key, octaveMod = 4) => {
     return { note: `${note}${oct}`, oct, freq };
 };
 
+const MIDI_NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+/** MIDI note number (0–127) → synth note info (same shape as getNoteInfo). */
+export const getNoteInfoFromMidi = (midiNote) => {
+    if (midiNote < 0 || midiNote > 127) return false;
+
+    const name = MIDI_NOTE_NAMES[midiNote % 12];
+    const oct = Math.floor(midiNote / 12) - 1;
+    const freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+
+    return { note: `${name}${oct}`, oct, freq };
+};
+
 // - SVG Path Maps -
 export const WAVEFORM = {
     sine: 'M 10 25 Q 18 10 25 25 Q 32 40 40 25',

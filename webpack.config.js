@@ -28,4 +28,11 @@ module.exports = {
             src: path.join(__dirname, './src'),
         },
     },
+    devServer: {
+        static: {
+            directory: path.join(__dirname, 'docs'),
+        },
+        hot: true,
+        port: 8080,
+    },
 };
