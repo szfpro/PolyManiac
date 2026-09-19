@@ -4,8 +4,8 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
-    "build": "webpack",
-    "start": "webpack --watch --mode=development"
+    "build": "NODE_OPTIONS=--openssl-legacy-provider webpack --mode=production",
+    "start": "NODE_OPTIONS=--openssl-legacy-provider webpack --watch --mode=development"
   },
   "devDependencies": {
     "@babel/core": "^7.13.1",
